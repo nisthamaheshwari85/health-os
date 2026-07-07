@@ -1,0 +1,8 @@
+{
+  "name": "@health-os/shared",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "description": "Types shared between apps/web and apps/mobile (Phase 2)."
+}

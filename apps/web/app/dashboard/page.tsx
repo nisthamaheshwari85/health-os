@@ -1,0 +1,145 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { getSupabaseClient } from "@/lib/supabaseClient";
+import { useSupabaseUser } from "@/hooks/useSupabaseUser";
+import { computeHealthScore } from "@/lib/healthScore";
+import { getTodayCalories } from "@/lib/nutrition";
+import { getXpTotal, getStreak } from "@/lib/gamification";
+import { computeHealthDebt, type HealthDebt } from "@/lib/healthDebt";
+import { computeHealthGPS } from "@/lib/healthGPS";
+import type { HealthMetric, HealthScoreBreakdown, Streak } from "@health-os/shared";
+import { NavBar } from "@/components/NavBar";
+import { HealthScoreCard } from "@/components/HealthScoreCard";
+import { TodayPriorities } from "@/components/TodayPriorities";
+import { GamificationBar } from "@/components/GamificationBar";
+import { DailyQuests, type Quest } from "@/components/DailyQuests";
+import { DailyLogForm } from "@/components/DailyLogForm";
+import { DecisionNavigator } from "@/components/DecisionNavigator";
+import { HealthDebtCard } from "@/components/HealthDebtCard";
+import { HealthGPSCard } from "@/components/HealthGPSCard";
+import { OnboardingTour } from "@/components/OnboardingTour";
+
+export default function DashboardPage() {
+  const { user, loading: authLoading } = useSupabaseUser();
+  const [dataLoading, setDataLoading] = useState(true);
+  const [breakdown, setBreakdown] = useState<HealthScoreBreakdown | null>(null);
+  const [xpTotal, setXpTotal] = useState(0);
+  const [streak, setStreak] = useState<Streak | null>(null);
+  const [vitalsLoggedToday, setVitalsLoggedToday] = useState(false);
+  const [mealLoggedToday, setMealLoggedToday] = useState(false);
+  const [chattedToday, setChattedToday] = useState(false);
+  const [healthDebt, setHealthDebt] = useState<HealthDebt | null>(null);
+
+  async function loadAll() {
+    if (!user) return;
+    const supabase = getSupabaseClient();
+
+    const today = new Date().toISOString().slice(0, 10);
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+
+    const [{ data: metric }, xp, streakRow, { count: mealCount }, { count: chatCount }, todayCalories, { data: weekMetrics }] =
+      await Promise.all([
+        supabase
+          .from("health_metrics")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("metric_date", today)
+          .maybeSingle<HealthMetric>(),
+        getXpTotal(supabase, user.id),
+        getStreak(supabase, user.id),
+        supabase
+          .from("meals")
+          .select("*", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .gte("logged_at", startOfDay.toISOString()),
+        supabase
+          .from("chat_messages")
+          .select("*", { count: "exact", head: true })
+          .eq("user_id", user.id)
+          .eq("role", "user")
+          .gte("created_at", startOfDay.toISOString()),
+        getTodayCalories(supabase, user.id),
+        supabase
+          .from("health_metrics")
+          .select("*")
+          .eq("user_id", user.id)
+          .gte("metric_date", sevenDaysAgo)
+          .returns<HealthMetric[]>(),
+      ]);
+
+    setBreakdown(computeHealthScore(metric ?? null, todayCalories));
+    setHealthDebt(computeHealthDebt(weekMetrics ?? []));
+    setXpTotal(xp);
+    setStreak(streakRow);
+    setVitalsLoggedToday(!!metric);
+    setMealLoggedToday((mealCount ?? 0) > 0);
+    setChattedToday((chatCount ?? 0) > 0);
+    setDataLoading(false);
+  }
+
+  useEffect(() => {
+    if (user) loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  if (authLoading || dataLoading || !breakdown || !healthDebt) {
+    return (
+      <main className="min-h-screen">
+        <NavBar />
+        <div className="px-6 py-16 text-center text-muted">Loading your Health Score…</div>
+      </main>
+    );
+  }
+
+  const name = user?.user_metadata?.full_name as string | undefined;
+
+  const quests: Quest[] = [
+    { label: "Log today's vitals", done: vitalsLoggedToday, href: "#log-vitals", xp: 15 },
+    { label: "Log a meal", done: mealLoggedToday, href: "/nutrition", xp: 10 },
+    { label: "Talk to your coach", done: chattedToday, href: "/coach", xp: 5 },
+  ];
+
+  return (
+    <main className="min-h-screen">
+      <OnboardingTour />
+      <NavBar />
+      <div className="max-w-4xl mx-auto px-6 py-10">
+        <h1 className="fade-up font-display text-3xl font-bold text-bone mb-1">
+          {name ? `Hey ${name.split(" ")[0]},` : "Hey,"} here's today
+        </h1>
+        <p className="fade-up text-muted mb-8">
+          No data logged yet for a metric? It defaults to neutral until you log it.
+        </p>
+
+        <div className="fade-up delay-1 mb-6">
+          <GamificationBar xpTotal={xpTotal} streak={streak} />
+        </div>
+
+        <div className="fade-up delay-2 grid md:grid-cols-2 gap-6 mb-6">
+          <HealthScoreCard breakdown={breakdown} />
+          <TodayPriorities priority={breakdown.topPriority} />
+        </div>
+
+        <div className="fade-up delay-3 grid md:grid-cols-2 gap-6 mb-6">
+          <DailyQuests quests={quests} />
+          <DailyLogForm onLogged={() => loadAll()} />
+        </div>
+
+        <div className="fade-up delay-4 mb-6">
+          <HealthDebtCard debt={healthDebt} />
+        </div>
+
+        <div className="fade-up delay-5 mb-6">
+          <HealthGPSCard gps={computeHealthGPS(breakdown)} />
+        </div>
+
+        <div className="fade-up delay-6">
+          <DecisionNavigator />
+        </div>
+      </div>
+    </main>
+  );
+}
